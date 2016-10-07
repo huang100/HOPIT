@@ -1,0 +1,129 @@
+function [LLV,score] = HOPIT_Likelihood_OP(Data,b,cut_point)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% This function produces log likelihood and score of HOPIT model
+% The cut-points are specified as follows, for example with 4 cut points
+%
+%                           c1=-inf ---- c2 ---- c3 ---- c4 ---- c5 ---- c6=inf
+%
+%   Inputs:
+%                           Data.Outcome_Indep                  :               Regressors in outcome function, eg. 1000X2, 1000 observations and 2 independent variables
+%                           Data.Outcome_Dep                    :               Outcome, self-assessment, eg. 1000X1
+%                           Data.cut_Indep                      :               Regressors in cut point function, eg. 1000X2
+%                           Data.Vignette                       :               Rating on vigettes, eg. 1000X4, for 4 vignettes
+%                           b                                   :               Parameters of the model
+%                           cut_point                           :               Number of cut points
+%
+%   Outputs:
+%                           LLV                                 :               Log likelihood
+%                           score                               :               Score (gradient of log likelihood), a vector
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Initiation
+% Import data
+X=Data.Outcome_Indep;                                       % Note: if X=[], then Xb=0
+H=Data.Outcome_Dep;
+Z=Data.Cut_Indep;
+                                        
+nc=cut_point;                                               % Number of cut-points
+n=size(H,1);                                                % Number of data points
+
+% Keep dimensions agree, a kX1 matrix
+if(size(b,1)>1)
+    b=b';                                                   
+end
+
+% Calculate the size of parameters
+kb=size(X,2);                                               % Length of beta
+kz=size(Z,2);                                               % Number of variables in cut-point functions
+kg=kz*nc;                                                   % Length of gamma
+
+% Define parameters
+beta=b(1:kb);                                               % Coefficients in outcome function
+gamma=b(kb+1:kb+kg);                                        % Coefficients in cut-point function
+
+% Define predictors
+Xb=X*beta';                                                 % Linear predictor, i.e., beta1*x1+beta2*x2..., nX1 matrix
+Zb=zeros(n,nc+2);                                           % Individual-specific cut points, nX(nc+2), including -Inf and Inf
+Zb(:,1)=-Inf;                                               % The first cut-point: -Inf
+Zb(:,2)=Z*gamma(1:kz)';                                     % The second cut-point
+if nc>=2
+    for i=3:nc+1
+        Zb(:,i)=Zb(:,i-1)+exp(Z*gamma(((i-2)*kz+1):((i-1)*kz))');     % The third, fourth,...
+    end
+end
+Zb(:,nc+2)=Inf;                                             % The last cut-point: Inf
+
+% In case X is not availalble. eg. in restricted model
+if isempty(X)
+    Xb=zeros(n,1);
+end
+
+
+%% Calculate the likelihood
+% Initiation (critical)
+Mills_beta=zeros(n,nc);
+
+% Log likelihood of the self-assessment component
+Unique_Outcome=unique(H);  
+npdf_1_beta=zeros(1,n);
+npdf_beta=zeros(1,n);
+ncdf_1_beta=zeros(1,n);
+ncdf_beta=zeros(1,n);
+ncdf_1_beta_alter=zeros(1,n);
+ncdf_beta_alter=zeros(1,n);
+for i=Unique_Outcome(1):Unique_Outcome(end) 
+    id=find(H==i);                                          % Tag individuals by categories
+    npdf_1_beta(id)=normpdf(Zb(id,i+1)-Xb(id));
+    npdf_beta(id)=normpdf(Zb(id,i)-Xb(id));
+    ncdf_1_beta(id)=normcdf(Zb(id,i+1)-Xb(id));
+    ncdf_beta(id)=normcdf(Zb(id,i)-Xb(id));
+    ncdf_1_beta_alter(id)=normcdf(-(Zb(id,i+1)-Xb(id)));
+    ncdf_beta_alter(id)=normcdf(-(Zb(id,i)-Xb(id)));
+end
+diff_pdf_beta=npdf_1_beta-npdf_beta;
+diff_cdf_beta=max(ncdf_1_beta-ncdf_beta,ncdf_beta_alter-ncdf_1_beta_alter);
+LV=diff_cdf_beta';
+Mills_beta(:,1)=diff_pdf_beta'./diff_cdf_beta';             % A nX1 array
+
+if nc>=2
+    for m=2:nc
+        diff_pdf_beta=zeros(1,n);
+        diff_cdf_beta=ones(1,n);
+        for i=m:Unique_Outcome(end)                                              % It is IMPORTANT to notice iteration starts
+            if i == m                                           % from m rather than Unique_Outcome(m)
+                indc = 0;
+            else
+                indc = 1;
+            end
+            id=find(H==i);
+            diff_pdf_beta(id)=npdf_1_beta(id)-indc*npdf_beta(id);
+            diff_cdf_beta(id)=max(ncdf_1_beta(id)-ncdf_beta(id),ncdf_beta_alter(id)-ncdf_1_beta_alter(id));
+        end
+        Mills_beta(:,m)=diff_pdf_beta'./diff_cdf_beta'.*exp(Z*gamma(((m-1)*kz+1):(m*kz))');
+    end
+end
+
+% Derive scores
+% Calculate the derivative w.r.t beta
+rep=Mills_beta(:,1)*ones(1,kb);                             % A nXkb matrix
+if ~isempty(X)
+    der(:,1:kb)= -rep.*X;                                      % A nXkb matrix
+end
+
+% Calculate the derivative w.r.t gamma
+for m=1:nc
+    rep1=Mills_beta(:,m)*ones(1,kz);                        % A nXkz matrix
+    der(:,kb+kz*(m-1)+1:kb+kz*m)=rep1.*Z;
+end
+
+
+%      der(isnan(der))=Inf;
+
+LLV=-sum(log(LV));
+
+
+%% Use the score as the second output when called
+if nargout > 1
+    score=-sum(der);
+end
+end
